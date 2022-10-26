@@ -1,0 +1,38 @@
+library(sp)
+data(meuse)
+View(meuse)
+# no trend:
+coordinates(meuse) = ~x+y
+var = variogram(zinc~1, meuse)
+plot(var)
+
+
+shapiro.test(rnorm(100, mean = 5, sd = 3))
+shapiro.test(runif(100, min = 2, max = 4))
+
+
+nug = min(var$gamma) ## nugget
+sill = max(var$gamma) ## sill
+
+amp = var$dist[which(var$gamma == max(var$gamma))]-
+  var$dist[which(var$gamma == min(var$gamma))]
+
+fit_var = fit.variogram(object = var,model =
+vgm(psill=sill,nugget=nug,range=amp,model="Gau"))
+
+
+plot(var,model=fit_var)
+
+meu_spdf = SpatialPointsDataFrame(coords = cbind(meuse$x,
+meuse$y),data = meuse,proj4string =CRS(projargs = "+init=epsg:32634"))
+
+samp = spsample(x= meu_spdf,n= 1000,type= "random")
+
+
+krig = krige(formula = zinc~1, locations = meu_spdf,
+             newdata = samp, model= fit_var)
+
+krig@data
+
+tmap = tm_shape(shp = krig)+ tm_dots(col="var1.pred")
+tmap

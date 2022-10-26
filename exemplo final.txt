@@ -1,0 +1,178 @@
+
+# Alguns pacotes para processamento de dados espaciais
+library(tidyverse) #tabulação de dados e gráficos
+library(sf) # processar um vetor espacial de dados - da maneira fácil
+library(sp) # o mesmo que acima mas da maneira que o pacote gstat precisa
+library(raster) 
+
+# Packages for geostatistics
+library(gstat)   # o mais popular pacote para Krigagem
+library(automap) # automatiza algumas partes do gstat
+
+# Abaixo, uns pacotes para gráficos bonitos
+library(patchwork)
+library(viridis)
+
+# Dados disponíveis aqui
+# https://www.opengeodata.nrw.de/produkte/umwelt_klima/wasser/flurabstandskarte_1988/
+
+grd_100_df <- readr::read_csv(
+  "https://raw.githubusercontent.com/Ignimbrit/exchange/master/data/2020/grid_100.csv",
+) %>% 
+  dplyr::select(-licence)
+
+write.table(grd_100_df,file="C:/Users/Bruno/Desktop/Dados.xls",sep=",",row.names=FALSE)
+
+# A projeção é EPSG 25832
+
+head(grd_100_df)
+
+
+grd_100_rstr <- raster::rasterFromXYZ(
+  grd_100_df, 
+  res = c(100, 100), # resolução em metros (ver crs)
+  crs = "+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+)
+
+plot(grd_100_rstr)
+
+set.seed(42) # para reprodução
+
+# Simular 100 observações aleatórias dentro dos dados
+wellobs <- slice_sample(grd_100_df, n = 100)
+
+ggplot(
+  data = wellobs,
+  mapping = aes(x = X, y = Y, color = Z)
+) +
+  geom_point(size = 3) + 
+  scale_color_viridis(option = "B") +
+  theme_classic()
+
+wellobs_sf <- st_as_sf(wellobs, coords = c("X", "Y"), crs = 25832) %>% 
+  cbind(st_coordinates(.))
+wellobs_sf
+
+v_emp_OK <- gstat::variogram(
+  Z~1,
+  as(wellobs_sf, "Spatial") # switch from {sf} to {sp}
+)
+
+plot(v_emp_OK)
+
+# autofitVariogram do pacote automap nos retorna mais informação do
+# que precisamos 
+
+v_mod_OK <- automap::autofitVariogram(Z~1, as(wellobs_sf, "Spatial"))$var_model
+
+plot(automap::autofitVariogram(Z~1, as(wellobs_sf, "Spatial")))
+
+## vamos agora criar uma amostra aleatória
+
+# Passo 1: definir a grade de observações 
+grd_100_sf <- wellobs_sf %>% 
+  st_bbox() %>% 
+  st_as_sfc() %>% 
+  st_make_grid(
+    cellsize = c(100, 100), # 100m tamanho dos pixels
+    what = "centers"
+  ) %>%
+  st_as_sf() %>%
+  cbind(., st_coordinates(.))
+
+# Passo 2: fazer a grade funcionar com o pacote gstat
+grd_100_sp <- as(grd_100_sf, "Spatial") # converte para o formato {sp}
+gridded(grd_100_sp) <- TRUE     # informa que o objeto é uma grade
+grd_100_sp <- as(grd_100_sp, "SpatialPixels") # specifica o tipo de grade
+
+
+# Ordinary Kriging
+OK <- krige(
+  Z~1,     # Z é a nossa variável e "~1" significa que depende da média
+  as(wellobs_sf, "Spatial"), # dados no formato {sp}
+  grd_100_sp,                # localização para interpolar
+  model = v_mod_OK           # o variograma ajustado
+)
+
+# Simple Kriging
+SK <- krige(
+  Z~1,                       # Z ainda depende da média
+  beta = mean(grd_100_df$Z), # mas desta vez informamos o valor da média
+  as(wellobs_sf, "Spatial"), 
+  grd_100_sp,                
+  model = v_mod_OK           
+)
+
+# Universal Kriging
+
+# Assumimos que Z não depende só da média mas da posição
+# da interpolação dentro da grade
+UK <- krige(
+  Z~coords.x1+coords.x2, 
+  as(wellobs_sf, "Spatial"), 
+  grd_100_sp,                
+  model = autofitVariogram(  # temos que alterar o modelo
+    Z~X+Y,                   
+    as(wellobs_sf, "Spatial")
+  )$var_model
+)
+
+
+# Método IDW (inverse distance weighted model)
+# A única diferença é que não precisa incluir o modelo do variograma 
+# ajustado
+idwres <- idw(
+  Z~1,                       # idw também só depende da média
+  as(wellobs_sf, "Spatial"), 
+  grd_100_sp,                
+) 
+
+
+# Incluir todos no mesmo gráfico
+plot_my_gstat_output <- function(raster_object, object_name){
+  
+  df <- rasterToPoints(raster_object) %>% as_tibble()
+  colnames(df) <- c("X", "Y", "Z")
+  
+  ggplot(df, aes(x = X, y = Y, fill = Z)) +
+    geom_raster() +
+    ggtitle(label = object_name) +
+    scale_fill_viridis(option = "B", limits = c(50, 100)) +
+    theme_void() +
+    theme(
+      plot.title = element_text(hjust = 0.5)
+    )
+}
+
+p_orig <- plot_my_gstat_output(grd_100_rstr, "Original Raster")
+p_idw <- plot_my_gstat_output(raster(idwres), "IDW")
+p_SK <- plot_my_gstat_output(raster(SK), "Simple Kriging")
+p_OK <- plot_my_gstat_output(raster(OK), "Ordinary Kriging")
+p_UK <- plot_my_gstat_output(raster(UK), "Universal Kriging")
+
+# gráfico na amostra da grade
+p_wellobs <- ggplot(
+  data = wellobs,
+  mapping = aes(x = X, y = Y, color = Z)
+) +
+  geom_point(size = 3) + 
+  scale_color_viridis(option = "B",  limits = c(50, 100)) +
+  ggtitle(label = "Observation Wells Sampled") +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# Isso funciona com o pacote patchwork
+(p_orig + p_wellobs + p_idw) / 
+  (p_SK + p_OK + p_UK) + 
+  plot_layout(guides = 'collect')
+
+map(list(SK, OK, UK), raster) %>% 
+  map(summary) %>%
+  do.call("cbind", .) %>% 
+  as.data.frame() %>% 
+  setNames(c("SK", "OK", "UK"))
+
+
+

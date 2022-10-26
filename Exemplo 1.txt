@@ -1,0 +1,108 @@
+rm(list=ls(all=TRUE))
+
+### vizinho mais próximo
+
+library(gstat) ## onde estão os dados
+library(sp) ## estrutura espacial 
+library(sf) ## estrutura espacial
+library(dismo) ## polygon method
+library(deldir)
+library(tmap)
+
+
+data("fulmar")
+head(fulmar)
+
+?fulmar
+
+f_spdf = sp::SpatialPointsDataFrame(coords = cbind(fulmar$x,
+fulmar$y),data = fulmar,proj4string =CRS(projargs = "+init=epsg:32631"))
+
+
+vp = dismo::voronoi(f_spdf)
+plot(vp)
+
+f_sf = st_as_sf(f_spdf)
+vp_sf = st_as_sf(vp)
+
+
+vp_join = st_join(x=vp_sf,y=f_sf)
+
+tmap = tm_shape(shp = vp_join) + tm_polygons(col="fulmar.x")
+
+tmap
+
+rm(list=ls(all=TRUE))
+
+
+library(gstat) ## onde estão os dados
+library(sp) ## estrutura espacial 
+
+
+data("fulmar")
+head(fulmar)
+
+## convertendo os dados em estruturas espaciais
+f_spdf = SpatialPointsDataFrame(coords = cbind(fulmar$x,
+                                                   fulmar$y),data = fulmar,proj4string =sp::CRS(projargs = "+init=epsg:32631"))
+
+## gerando pontos desconhecidos para interpolar
+samp = spsample(x= f_spdf,n= 1000,type= "random")
+plot(samp)
+
+## idw
+
+idw = idw(formula = fulmar~1,locations = f_spdf,
+                 newdata = samp,idp = 1)
+
+head(idw@data)
+
+tmap = tm_shape(idw) + tm_dots(col= "var1.pred")
+tmap
+
+### Semivariogram
+
+
+rm(list=ls(all=TRUE))
+
+
+library(gstat) ## onde estão os dados
+library(sp) ## estrutura espacial 
+
+
+data("fulmar")
+head(fulmar)
+?fulmar
+
+## convertendo os dados em estruturas espaciais
+f_spdf = SpatialPointsDataFrame(coords = cbind(fulmar$x,
+fulmar$y),data = fulmar,proj4string =CRS(projargs = "+init=epsg:32631"))
+
+var = variogram(object=fulmar~1, locations =f_spdf)
+plot(var)
+
+nug = min(var$gamma) ## nugget
+sill = max(var$gamma) ## sill
+
+amp = var$dist[which(var$gamma == max(var$gamma))]-
+var$dist[which(var$gamma == min(var$gamma))]
+
+## variograma teórico
+
+fit_var = fit.variogram(object = var,model =
+          vgm(psill=sill,nugget=nug,range=amp,model="Gau"))
+
+plot(var,model=fit_var)
+
+## Kriging
+
+samp = spsample(x= f_spdf,n= 1000,type= "random")
+
+krig = krige(formula = fulmar~1, locations = f_spdf,
+             newdata = samp, model= fit_var)
+
+head(krig@data)
+
+tmap = tm_shape(shp = krig)+ tm_dots(col="var1.pred")
+tmap
+
